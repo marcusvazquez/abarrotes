@@ -21,6 +21,8 @@ interface Movimiento {
   tipo: "Entrada" | "Salida";
   cantidad: number;
   motivo: string;
+  destino?: string;
+  proveedor?: string;
   fecha: string;
 }
 
@@ -30,6 +32,7 @@ const INVENTARIO_KEY = "abarrotes_inventario";
 const CARRITO_KEY = "abarrotes_carrito";
 const MOVIMIENTOS_KEY = "abarrotes_movimientos";
 const VISTA_KEY = "abarrotes_vista";
+const PROVEEDORES_KEY = "abarrotes_proveedores";
 
 const INVENTARIO_INICIAL: Producto[] = [
   { codigo: "A001", nombre: "Arroz", descripcion: "Bolsa de 1 kg", unidad: "pieza", stock_minimo: 5, stock_actual: 20, precio: 25 },
@@ -54,12 +57,39 @@ const INVENTARIO_INICIAL: Producto[] = [
   { codigo: "A020", nombre: "Sal de Mesa", descripcion: "Bolsa 1kg", unidad: "pieza", stock_minimo: 5, stock_actual: 20, precio: 12 },
 ];
 
+const PROVEEDORES_INICIALES = [
+  "Distribuidora La Central",
+  "Mayoreo El Buen Precio",
+  "Abarrotes Unidos del Norte",
+];
+
+const NUEVO_PRODUCTO_INICIAL = {
+  codigo: "",
+  nombre: "",
+  descripcion: "",
+  unidad: "pieza",
+  stock_minimo: "",
+  stock_actual: "",
+  precio: "",
+};
+
 export default function Home() {
   const [inventario, setInventario] = useState<Producto[]>(INVENTARIO_INICIAL);
   const [carrito, setCarrito] = useState<Carrito>({});
   const [movimientos, setMovimientos] = useState<Movimiento[]>([]);
   const [vistaActiva, setVistaActiva] = useState<VistaActiva>("tienda");
   const [entradaPorProducto, setEntradaPorProducto] = useState<Record<string, string>>({});
+  const [proveedorPorProducto, setProveedorPorProducto] = useState<Record<string, string>>({});
+  const [proveedores] = useState<string[]>(PROVEEDORES_INICIALES);
+  const [salidaForm, setSalidaForm] = useState({
+    fecha: new Date().toISOString().slice(0, 10),
+    codigo: INVENTARIO_INICIAL[0]?.codigo ?? "",
+    cantidad: "1",
+    destino: "",
+    motivo: "Venta",
+  });
+  const [nuevoProducto, setNuevoProducto] = useState(NUEVO_PRODUCTO_INICIAL);
+  const [mensajeAdmin, setMensajeAdmin] = useState("");
   const [isHydrated, setIsHydrated] = useState(false);
 
   useEffect(() => {
@@ -67,6 +97,7 @@ export default function Home() {
     const carritoGuardado = localStorage.getItem(CARRITO_KEY);
     const movimientosGuardados = localStorage.getItem(MOVIMIENTOS_KEY);
     const vistaGuardada = localStorage.getItem(VISTA_KEY);
+    const proveedoresGuardados = localStorage.getItem(PROVEEDORES_KEY);
 
     if (inventarioGuardado) {
       setInventario(JSON.parse(inventarioGuardado) as Producto[]);
@@ -79,6 +110,17 @@ export default function Home() {
     }
     if (vistaGuardada === "tienda" || vistaGuardada === "almacen") {
       setVistaActiva(vistaGuardada);
+    }
+    if (proveedoresGuardados) {
+      try {
+        const parsed = JSON.parse(proveedoresGuardados) as string[];
+        if (parsed.length > 0) {
+          // mantenemos estado estable para los proveedores ficticios iniciales
+          void parsed;
+        }
+      } catch {
+        // ignorar valor invalido y conservar proveedores iniciales
+      }
     }
     setIsHydrated(true);
   }, []);
@@ -103,6 +145,11 @@ export default function Home() {
     localStorage.setItem(VISTA_KEY, vistaActiva);
   }, [vistaActiva, isHydrated]);
 
+  useEffect(() => {
+    if (!isHydrated) return;
+    localStorage.setItem(PROVEEDORES_KEY, JSON.stringify(proveedores));
+  }, [proveedores, isHydrated]);
+
   const totalPiezasCarrito = useMemo(
     () => Object.values(carrito).reduce((acc, qty) => acc + qty, 0),
     [carrito],
@@ -116,6 +163,44 @@ export default function Home() {
       }, 0),
     [inventario, carrito],
   );
+
+  const resumenAlmacen = useMemo(() => {
+    const totalEntradas = movimientos
+      .filter((movimiento) => movimiento.tipo === "Entrada")
+      .reduce((acc, movimiento) => acc + movimiento.cantidad, 0);
+    const totalSalidas = movimientos
+      .filter((movimiento) => movimiento.tipo === "Salida")
+      .reduce((acc, movimiento) => acc + movimiento.cantidad, 0);
+    const productosBajoStock = inventario.filter(
+      (producto) => producto.stock_actual <= producto.stock_minimo,
+    );
+
+    const usoPorProducto = movimientos
+      .filter((movimiento) => movimiento.tipo === "Salida")
+      .reduce<Record<string, number>>((acc, movimiento) => {
+        acc[movimiento.codigo] = (acc[movimiento.codigo] ?? 0) + movimiento.cantidad;
+        return acc;
+      }, {});
+
+    const productosMasUtilizados = Object.entries(usoPorProducto)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([codigo, total]) => {
+        const producto = inventario.find((item) => item.codigo === codigo);
+        return {
+          codigo,
+          nombre: producto?.nombre ?? codigo,
+          total,
+        };
+      });
+
+    return {
+      totalEntradas,
+      totalSalidas,
+      productosBajoStock,
+      productosMasUtilizados,
+    };
+  }, [movimientos, inventario]);
 
   const agregarAlCarrito = (codigo: string) => {
     const producto = inventario.find((item) => item.codigo === codigo);
@@ -161,6 +246,7 @@ export default function Home() {
         tipo: "Salida",
         cantidad,
         motivo: "Venta",
+        destino: "Cliente mostrador",
         fecha,
       });
 
@@ -171,7 +257,7 @@ export default function Home() {
     });
 
     setInventario(inventarioActualizado);
-    setMovimientos((prev) => [ ...nuevosMovimientos, ...prev ]);
+    setMovimientos((prev) => [...nuevosMovimientos, ...prev]);
     setCarrito({});
   };
 
@@ -199,13 +285,118 @@ export default function Home() {
         nombre: producto.nombre,
         tipo: "Entrada",
         cantidad,
-        motivo: "Surtido",
+        motivo: "Abastecimiento",
+        proveedor:
+          proveedorPorProducto[codigo] ??
+          proveedores[0] ??
+          "Proveedor no especificado",
         fecha,
       },
       ...prev,
     ]);
 
     setEntradaPorProducto((prev) => ({ ...prev, [codigo]: "" }));
+  };
+
+  const registrarSalidaManual = () => {
+    const cantidad = Number(salidaForm.cantidad);
+    if (!Number.isInteger(cantidad) || cantidad <= 0) {
+      setMensajeAdmin("La cantidad de salida debe ser un entero mayor a 0.");
+      return;
+    }
+    if (!salidaForm.codigo) {
+      setMensajeAdmin("Selecciona un producto para registrar la salida.");
+      return;
+    }
+    if (!salidaForm.destino.trim()) {
+      setMensajeAdmin("Ingresa el destino de la salida.");
+      return;
+    }
+
+    const producto = inventario.find((item) => item.codigo === salidaForm.codigo);
+    if (!producto) {
+      setMensajeAdmin("No se encontro el producto seleccionado.");
+      return;
+    }
+    if (producto.stock_actual < cantidad) {
+      setMensajeAdmin("No hay stock suficiente para registrar esa salida.");
+      return;
+    }
+
+    const fechaSalida = new Date(salidaForm.fecha);
+    const fechaISO = Number.isNaN(fechaSalida.getTime())
+      ? new Date().toISOString()
+      : fechaSalida.toISOString();
+
+    setInventario((prev) =>
+      prev.map((item) =>
+        item.codigo === salidaForm.codigo
+          ? { ...item, stock_actual: item.stock_actual - cantidad }
+          : item,
+      ),
+    );
+    setMovimientos((prev) => [
+      {
+        id: crypto.randomUUID(),
+        codigo: producto.codigo,
+        nombre: producto.nombre,
+        tipo: "Salida",
+        cantidad,
+        destino: salidaForm.destino.trim(),
+        motivo: salidaForm.motivo,
+        fecha: fechaISO,
+      },
+      ...prev,
+    ]);
+    setMensajeAdmin("Salida registrada correctamente.");
+    setSalidaForm((prev) => ({ ...prev, cantidad: "1", destino: "" }));
+  };
+
+  const registrarProducto = () => {
+    if (
+      !nuevoProducto.codigo.trim() ||
+      !nuevoProducto.nombre.trim() ||
+      !nuevoProducto.descripcion.trim()
+    ) {
+      setMensajeAdmin("Completa codigo, nombre y descripcion del producto.");
+      return;
+    }
+
+    const stockMinimo = Number(nuevoProducto.stock_minimo);
+    const stockActual = Number(nuevoProducto.stock_actual);
+    const precio = Number(nuevoProducto.precio);
+    if (
+      !Number.isInteger(stockMinimo) ||
+      stockMinimo < 0 ||
+      !Number.isInteger(stockActual) ||
+      stockActual < 0 ||
+      Number.isNaN(precio) ||
+      precio <= 0
+    ) {
+      setMensajeAdmin("Revisa stock minimo, stock actual y precio.");
+      return;
+    }
+
+    const codigo = nuevoProducto.codigo.trim().toUpperCase();
+    if (inventario.some((producto) => producto.codigo === codigo)) {
+      setMensajeAdmin("Ya existe un producto con ese codigo.");
+      return;
+    }
+
+    setInventario((prev) => [
+      ...prev,
+      {
+        codigo,
+        nombre: nuevoProducto.nombre.trim(),
+        descripcion: nuevoProducto.descripcion.trim(),
+        unidad: nuevoProducto.unidad.trim() || "pieza",
+        stock_minimo: stockMinimo,
+        stock_actual: stockActual,
+        precio,
+      },
+    ]);
+    setNuevoProducto(NUEVO_PRODUCTO_INICIAL);
+    setMensajeAdmin("Producto registrado correctamente.");
   };
 
   return (
@@ -345,6 +536,164 @@ export default function Home() {
         ) : (
           <section className="space-y-6">
             <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-sky-200">
+              <h2 className="text-xl font-bold text-sky-700">Resumen y Analitica</h2>
+              <div className="mt-4 grid gap-3 md:grid-cols-3">
+                <div className="rounded-lg bg-sky-50 p-3 ring-1 ring-sky-200">
+                  <p className="text-xs text-slate-600">Total de entradas</p>
+                  <p className="text-xl font-bold text-emerald-700">
+                    {resumenAlmacen.totalEntradas}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-sky-50 p-3 ring-1 ring-sky-200">
+                  <p className="text-xs text-slate-600">Total de salidas</p>
+                  <p className="text-xl font-bold text-rose-700">
+                    {resumenAlmacen.totalSalidas}
+                  </p>
+                </div>
+                <div className="rounded-lg bg-sky-50 p-3 ring-1 ring-sky-200">
+                  <p className="text-xs text-slate-600">Productos con bajo stock</p>
+                  <p className="text-xl font-bold text-sky-700">
+                    {resumenAlmacen.productosBajoStock.length}
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                <div className="rounded-lg bg-sky-50 p-4 ring-1 ring-sky-200">
+                  <h3 className="text-sm font-bold text-slate-800">Productos mas utilizados</h3>
+                  {resumenAlmacen.productosMasUtilizados.length === 0 ? (
+                    <p className="mt-2 text-sm text-slate-600">Aun no hay salidas registradas.</p>
+                  ) : (
+                    <ul className="mt-2 space-y-1 text-sm text-slate-700">
+                      {resumenAlmacen.productosMasUtilizados.map((item) => (
+                        <li key={item.codigo}>
+                          {item.nombre} ({item.codigo}): {item.total}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <div className="rounded-lg bg-sky-50 p-4 ring-1 ring-sky-200">
+                  <h3 className="text-sm font-bold text-slate-800">Conclusiones del control</h3>
+                  <p className="mt-2 text-sm text-slate-700">
+                    {resumenAlmacen.productosBajoStock.length > 0
+                      ? "Se recomienda priorizar abastecimiento de productos en nivel minimo o critico."
+                      : "El inventario se mantiene estable respecto al stock minimo configurado."}
+                  </p>
+                  <p className="mt-2 text-sm text-slate-700">
+                    {resumenAlmacen.totalSalidas > resumenAlmacen.totalEntradas
+                      ? "Las salidas superan a las entradas; monitorea rotacion para evitar quiebres de stock."
+                      : "Las entradas son suficientes para sostener la operacion actual del almacen."}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-sky-200">
+              <h2 className="text-xl font-bold text-sky-700">Proveedores Ficticios</h2>
+              <ul className="mt-3 grid gap-2 sm:grid-cols-3">
+                {proveedores.map((proveedor) => (
+                  <li
+                    key={proveedor}
+                    className="rounded-md bg-sky-50 px-3 py-2 text-sm text-slate-700 ring-1 ring-sky-200"
+                  >
+                    {proveedor}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-sky-200">
+              <h2 className="text-xl font-bold text-sky-700">Registrar Producto</h2>
+              <div className="mt-4 grid gap-3 md:grid-cols-3">
+                <input
+                  type="text"
+                  placeholder="Codigo (ej. A021)"
+                  value={nuevoProducto.codigo}
+                  onChange={(event) =>
+                    setNuevoProducto((prev) => ({ ...prev, codigo: event.target.value }))
+                  }
+                  className="rounded-md border border-sky-300 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                />
+                <input
+                  type="text"
+                  placeholder="Nombre"
+                  value={nuevoProducto.nombre}
+                  onChange={(event) =>
+                    setNuevoProducto((prev) => ({ ...prev, nombre: event.target.value }))
+                  }
+                  className="rounded-md border border-sky-300 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                />
+                <input
+                  type="text"
+                  placeholder="Descripcion"
+                  value={nuevoProducto.descripcion}
+                  onChange={(event) =>
+                    setNuevoProducto((prev) => ({ ...prev, descripcion: event.target.value }))
+                  }
+                  className="rounded-md border border-sky-300 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                />
+                <input
+                  type="text"
+                  placeholder="Unidad"
+                  value={nuevoProducto.unidad}
+                  onChange={(event) =>
+                    setNuevoProducto((prev) => ({ ...prev, unidad: event.target.value }))
+                  }
+                  className="rounded-md border border-sky-300 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="Stock minimo"
+                  value={nuevoProducto.stock_minimo}
+                  onChange={(event) =>
+                    setNuevoProducto((prev) => ({
+                      ...prev,
+                      stock_minimo: event.target.value,
+                    }))
+                  }
+                  className="rounded-md border border-sky-300 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  placeholder="Stock actual"
+                  value={nuevoProducto.stock_actual}
+                  onChange={(event) =>
+                    setNuevoProducto((prev) => ({
+                      ...prev,
+                      stock_actual: event.target.value,
+                    }))
+                  }
+                  className="rounded-md border border-sky-300 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                />
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  placeholder="Precio"
+                  value={nuevoProducto.precio}
+                  onChange={(event) =>
+                    setNuevoProducto((prev) => ({
+                      ...prev,
+                      precio: event.target.value,
+                    }))
+                  }
+                  className="rounded-md border border-sky-300 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={registrarProducto}
+                className="mt-4 rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-600"
+              >
+                Registrar producto
+              </button>
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-sky-200">
               <h2 className="text-xl font-bold text-sky-700">Inventario Actual</h2>
               <div className="mt-4 overflow-x-auto">
                 <table className="min-w-full text-left text-sm">
@@ -354,6 +703,7 @@ export default function Home() {
                       <th className="px-3 py-2">Producto</th>
                       <th className="px-3 py-2">Stock actual</th>
                       <th className="px-3 py-2">Stock minimo</th>
+                      <th className="px-3 py-2">Proveedor</th>
                       <th className="px-3 py-2">Entrada</th>
                       <th className="px-3 py-2">Accion</th>
                     </tr>
@@ -372,6 +722,24 @@ export default function Home() {
                             {producto.stock_actual}
                           </td>
                           <td className="px-3 py-2">{producto.stock_minimo}</td>
+                          <td className="px-3 py-2">
+                            <select
+                              value={proveedorPorProducto[producto.codigo] ?? proveedores[0] ?? ""}
+                              onChange={(event) =>
+                                setProveedorPorProducto((prev) => ({
+                                  ...prev,
+                                  [producto.codigo]: event.target.value,
+                                }))
+                              }
+                              className="rounded-md border border-sky-300 bg-white px-2 py-1 outline-none focus:ring-2 focus:ring-sky-300"
+                            >
+                              {proveedores.map((proveedor) => (
+                                <option key={proveedor} value={proveedor}>
+                                  {proveedor}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
                           <td className="px-3 py-2">
                             <input
                               type="number"
@@ -405,6 +773,76 @@ export default function Home() {
             </div>
 
             <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-sky-200">
+              <h2 className="text-xl font-bold text-sky-700">Registro de Salidas</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Cada salida incluye fecha, producto, cantidad, destino y motivo.
+              </p>
+              <div className="mt-4 grid gap-3 md:grid-cols-5">
+                <input
+                  type="date"
+                  value={salidaForm.fecha}
+                  onChange={(event) =>
+                    setSalidaForm((prev) => ({ ...prev, fecha: event.target.value }))
+                  }
+                  className="rounded-md border border-sky-300 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                />
+                <select
+                  value={salidaForm.codigo}
+                  onChange={(event) =>
+                    setSalidaForm((prev) => ({ ...prev, codigo: event.target.value }))
+                  }
+                  className="rounded-md border border-sky-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                >
+                  {inventario.map((producto) => (
+                    <option key={producto.codigo} value={producto.codigo}>
+                      {producto.codigo} - {producto.nombre}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  min={1}
+                  placeholder="Cantidad"
+                  value={salidaForm.cantidad}
+                  onChange={(event) =>
+                    setSalidaForm((prev) => ({ ...prev, cantidad: event.target.value }))
+                  }
+                  className="rounded-md border border-sky-300 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                />
+                <input
+                  type="text"
+                  placeholder="Destino (cliente o area)"
+                  value={salidaForm.destino}
+                  onChange={(event) =>
+                    setSalidaForm((prev) => ({ ...prev, destino: event.target.value }))
+                  }
+                  className="rounded-md border border-sky-300 px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                />
+                <select
+                  value={salidaForm.motivo}
+                  onChange={(event) =>
+                    setSalidaForm((prev) => ({ ...prev, motivo: event.target.value }))
+                  }
+                  className="rounded-md border border-sky-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-sky-300"
+                >
+                  <option value="Venta">Venta</option>
+                  <option value="Merma">Merma</option>
+                  <option value="Uso interno">Uso interno</option>
+                </select>
+              </div>
+              <button
+                type="button"
+                onClick={registrarSalidaManual}
+                className="mt-4 rounded-md bg-sky-500 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-600"
+              >
+                Registrar salida
+              </button>
+              {mensajeAdmin ? (
+                <p className="mt-2 text-sm font-medium text-slate-700">{mensajeAdmin}</p>
+              ) : null}
+            </div>
+
+            <div className="rounded-2xl bg-white p-6 shadow-sm ring-1 ring-sky-200">
               <h2 className="text-xl font-bold text-sky-700">Historial de Movimientos</h2>
               {movimientos.length === 0 ? (
                 <p className="mt-3 text-sm text-slate-600">No hay movimientos registrados.</p>
@@ -418,6 +856,8 @@ export default function Home() {
                         <th className="px-3 py-2">Codigo</th>
                         <th className="px-3 py-2">Producto</th>
                         <th className="px-3 py-2">Cantidad</th>
+                        <th className="px-3 py-2">Destino</th>
+                        <th className="px-3 py-2">Proveedor</th>
                         <th className="px-3 py-2">Motivo</th>
                       </tr>
                     </thead>
@@ -435,6 +875,8 @@ export default function Home() {
                           <td className="px-3 py-2 font-mono">{movimiento.codigo}</td>
                           <td className="px-3 py-2">{movimiento.nombre}</td>
                           <td className="px-3 py-2">{movimiento.cantidad}</td>
+                          <td className="px-3 py-2">{movimiento.destino ?? "-"}</td>
+                          <td className="px-3 py-2">{movimiento.proveedor ?? "-"}</td>
                           <td className="px-3 py-2">{movimiento.motivo}</td>
                         </tr>
                       ))}
